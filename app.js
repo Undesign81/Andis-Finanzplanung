@@ -1,659 +1,1219 @@
-/********************************
- * DATUM / FORMAT
- ********************************/
-function todayISO() {
+/* Finanzplan – Tool-freie Version (localStorage) */
+
+const STORAGE_KEY = "finanzplan_v1";
+
+/* ---------- Helpers ---------- */
+const $ = (id) => document.getElementById(id);
+
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  setTimeout(()=>t.classList.add("hidden"), 1800);
+}
+
+function todayYMD(){
   const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function ymFromDate(ymd){
+  return ymd.slice(0,7);
+}
+function ymNow(){
+  return ymFromDate(todayYMD());
+}
+function monthLabelDE(ym){
+  const [y,m] = ym.split("-").map(Number);
+  const dt = new Date(y, m-1, 1);
+  return dt.toLocaleDateString("de-DE", { month:"long", year:"numeric" });
+}
+function addMonths(ym, delta){
+  const [y,m] = ym.split("-").map(Number);
+  const dt = new Date(y, m-1, 1);
+  dt.setMonth(dt.getMonth() + delta);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;
+}
+function centsToEUR(c){
+  return (c/100).toLocaleString("de-DE", { style:"currency", currency:"EUR" });
+}
+function eurToCents(str){
+  // akzeptiert "12,34" oder "12.34" oder "12"
+  const s = String(str).trim().replace(/\./g,"").replace(",",".");
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * 100);
+}
+function uid(prefix){
+  return `${prefix}_${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`;
 }
 
-function currentMonthISO() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  return `${yyyy}-${mm}`;
+/* ---------- Data Model ---------- */
+function defaultState(){
+  return {
+    incomeMonth: ymNow(),
+    fixedMonth: ymNow(),
+    expensesMonth: ymNow(),
+    savingsMonth: ymNow(),
+
+    // Types/Categories
+    fixedTypes: [
+      {id:"ft_rent", name:"Miete"},
+      {id:"ft_power", name:"Strom"},
+      {id:"ft_net", name:"Internet/Handy"},
+      {id:"ft_ins", name:"Versicherung"},
+      {id:"ft_other", name:"Sonstiges"},
+    ],
+    expenseCategories: [
+      {id:"ec_food", name:"Lebensmittel"},
+      {id:"ec_fun", name:"Freizeit"},
+      {id:"ec_drug", name:"Drogerie"},
+      {id:"ec_fuel", name:"Tanken"},
+      {id:"ec_other", name:"Sonstiges"},
+    ],
+
+    // Entries
+    incomes: [],      // {id,date,month,amountCents,type,note?}
+    fixedCosts: [],   // {id,date,month,amountCents,typeId,note?}
+    expenses: [],     // {id,date,month,amountCents,categoryId,note?}
+
+    // Savings
+    savingsPlans: [],   // {id,name,targetCents?,isArchived}
+    savingsRates: [],   // {id,planId,month,amountCents}
+    savingsMoves: [],   // {id,planId,date,month,amountCents,type:'deposit'|'withdraw'}
+  };
 }
 
-function nextMonthISO(ym) {
-  if (!ym || !ym.includes("-")) return currentMonthISO();
-  const [yStr, mStr] = ym.split("-");
-  const y = Number(yStr);
-  const m = Number(mStr);
-  if (!y || !m) return currentMonthISO();
-
-  let ny = y;
-  let nm = m + 1;
-  if (nm === 13) {
-    nm = 1;
-    ny += 1;
+function loadState(){
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if(!raw) return defaultState();
+  try{
+    const st = JSON.parse(raw);
+    // minimal migration safety
+    return Object.assign(defaultState(), st);
+  }catch{
+    return defaultState();
   }
-  return `${String(ny).padStart(4, "0")}-${String(nm).padStart(2, "0")}`;
+}
+function saveState(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function fmtDatum(iso) {
-  if (!iso || !iso.includes("-")) return iso || "";
-  const parts = iso.split("-");
-  if (parts.length !== 3) return iso;
-  const [y, m, d] = parts;
-  return `${d}.${m}.${y}`;
+function resetAll(){
+  localStorage.removeItem(STORAGE_KEY);
+  state = defaultState();
+  saveState();
+  renderAll();
+  toast("Zurückgesetzt");
 }
 
-function fmtMonat(ym) {
-  if (!ym || !ym.includes("-")) return ym || "";
-  const [y, m] = ym.split("-");
-  return `${m}.${y}`;
-}
-
-/********************************
- * GELD
- ********************************/
-function euro(zahl) {
-  return Number(zahl).toFixed(2) + " €";
-}
-
-function summe(liste) {
-  return liste.reduce((sum, e) => sum + Number(e.betrag), 0);
-}
-
-/********************************
- * ID HELPERS
- ********************************/
-function newId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function ensureIds(arr) {
-  let changed = false;
-  const out = arr.map(x => {
-    if (!x.id) {
-      changed = true;
-      return { ...x, id: newId() };
-    }
-    return x;
-  });
-  return { out, changed };
-}
-
-/********************************
- * VERSIONIERUNG FIXKOSTEN
- * - Änderungen können ab "diesem Monat" ODER "nächstem Monat" gelten
- * - Vergangenheit bleibt unverändert
- ********************************/
-function ensureVersionFields(arr, defaultStartMonat) {
-  let changed = false;
-  const out = arr.map(x => {
-    const nx = { ...x };
-    if (!nx.id) { nx.id = newId(); changed = true; }
-    if (!nx.baseId) { nx.baseId = nx.id; changed = true; }
-    if (!nx.startMonat) { nx.startMonat = defaultStartMonat; changed = true; }
-    if (typeof nx.deleted !== "boolean") nx.deleted = false;
-    return nx;
-  });
-  return { out, changed };
-}
-
-function effectiveByMonth(versionedList, selectedMonth) {
-  const map = new Map();
-  for (const item of versionedList) {
-    if (!item.startMonat) continue;
-    if (item.startMonat <= selectedMonth) {
-      const prev = map.get(item.baseId);
-      if (!prev || prev.startMonat < item.startMonat) {
-        map.set(item.baseId, item);
-      }
-    }
-  }
-  return Array.from(map.values()).filter(x => !x.deleted);
-}
-
-/********************************
- * MONATE (für "Gesamt gespart")
- ********************************/
-function monthsInclusive(startYM, endYM) {
-  if (!startYM || !endYM) return 0;
-  const [sy, sm] = startYM.split("-").map(Number);
-  const [ey, em] = endYM.split("-").map(Number);
-  if (!sy || !sm || !ey || !em) return 0;
-
-  const start = sy * 12 + (sm - 1);
-  const end = ey * 12 + (em - 1);
-  const diff = end - start;
-  return diff >= 0 ? diff + 1 : 0;
-}
-
-/********************************
- * UI: Zeile mit 🗑️ Button
- ********************************/
-function makeRowWithDelete(mainText, onRowClick, onDeleteClick, extraNote) {
-  const row = document.createElement("div");
-  row.className = "list-item item-row";
-
-  const left = document.createElement("div");
-  left.className = "item-main";
-
-  const title = document.createElement("div");
-  title.textContent = mainText;
-  left.appendChild(title);
-
-  if (extraNote) {
-    const note = document.createElement("div");
-    note.className = "small";
-    note.textContent = extraNote;
-    left.appendChild(note);
-  }
-
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "icon-btn";
-  del.textContent = "🗑️";
-  del.setAttribute("aria-label", "Löschen");
-
-  row.addEventListener("click", () => onRowClick());
-  del.addEventListener("click", (e) => {
-    e.stopPropagation();
-    onDeleteClick();
-  });
-
-  row.appendChild(left);
-  row.appendChild(del);
-  return row;
-}
-
-/********************************
- * DEMO-DATEN (nur beim ersten Start)
- ********************************/
-if (!localStorage.getItem("einnahmen")) {
-  localStorage.setItem("einnahmen", JSON.stringify([
-    { id: newId(), name: "Gehalt", betrag: 2200 },
-    { id: newId(), name: "Nebenjob", betrag: 300 }
-  ]));
-}
-
-// Fixkosten sind versioniert gespeichert
-if (!localStorage.getItem("fixkosten")) {
-  localStorage.setItem("fixkosten", JSON.stringify([
-    { id: newId(), baseId: newId(), name: "Miete", betrag: 950, startMonat: "1900-01", deleted: false },
-    { id: newId(), baseId: newId(), name: "Handy", betrag: 30, startMonat: "1900-01", deleted: false }
-  ]));
-}
-
-if (!localStorage.getItem("sparen")) {
-  localStorage.setItem("sparen", JSON.stringify([
-    { id: newId(), name: "Notgroschen", betrag: 200, startMonat: currentMonthISO() }
-  ]));
-}
-
-if (!localStorage.getItem("buchungen")) {
-  localStorage.setItem("buchungen", JSON.stringify([
-    { id: newId(), datum: todayISO(), betrag: -150, kategorie: "Essen", notiz: "Supermarkt" }
-  ]));
-}
-
-if (!localStorage.getItem("selectedMonth")) {
-  localStorage.setItem("selectedMonth", currentMonthISO());
-}
-
-/********************************
- * MONAT STEUERUNG
- ********************************/
-function getSelectedMonth() {
-  return localStorage.getItem("selectedMonth") || currentMonthISO();
-}
-
-function setSelectedMonth(ym) {
-  localStorage.setItem("selectedMonth", ym);
-  render();
-}
-
-function setToCurrentMonth() {
-  const ym = currentMonthISO();
-  const input = document.getElementById("monat");
-  input.value = ym;
-  setSelectedMonth(ym);
-}
-
-/********************************
- * EINNAHMEN
- ********************************/
-function addEinnahme() {
-  const name = prompt("Name der Einnahme:");
-  if (!name) return;
-
-  const betrag = Number(prompt("Betrag (€):"));
-  if (isNaN(betrag)) return;
-
-  const einnahmen = JSON.parse(localStorage.getItem("einnahmen")) || [];
-  einnahmen.push({ id: newId(), name, betrag });
-
-  localStorage.setItem("einnahmen", JSON.stringify(einnahmen));
-  render();
-}
-
-function editEinnahmeById(id) {
-  const einnahmen0 = JSON.parse(localStorage.getItem("einnahmen")) || [];
-  const { out: einnahmen, changed } = ensureIds(einnahmen0);
-  if (changed) localStorage.setItem("einnahmen", JSON.stringify(einnahmen));
-
-  const index = einnahmen.findIndex(x => x.id === id);
-  if (index < 0) return;
-
-  const e = einnahmen[index];
-  const neuerName = prompt("Name ändern:", e.name);
-  if (neuerName === null) return;
-
-  const neuerBetrag = Number(prompt("Betrag ändern (€):", e.betrag));
-  if (isNaN(neuerBetrag)) return;
-
-  if (confirm("Einnahme löschen?")) {
-    einnahmen.splice(index, 1);
-  } else {
-    einnahmen[index] = { ...e, name: neuerName, betrag: neuerBetrag };
-  }
-
-  localStorage.setItem("einnahmen", JSON.stringify(einnahmen));
-  render();
-}
-
-function deleteEinnahmeById(id) {
-  const einnahmen0 = JSON.parse(localStorage.getItem("einnahmen")) || [];
-  const { out: einnahmen, changed } = ensureIds(einnahmen0);
-  if (changed) localStorage.setItem("einnahmen", JSON.stringify(einnahmen));
-
-  const idx = einnahmen.findIndex(x => x.id === id);
-  if (idx < 0) return;
-  if (!confirm("Einnahme wirklich löschen?")) return;
-
-  einnahmen.splice(idx, 1);
-  localStorage.setItem("einnahmen", JSON.stringify(einnahmen));
-  render();
-}
-
-/********************************
- * FIXKOSTEN (NEU: ab diesem Monat ODER ab nächstem Monat)
- ********************************/
-function addFixkosten() {
-  const selectedMonth = getSelectedMonth();
-  const nextMonth = nextMonthISO(selectedMonth);
-
-  const abNaechstem = confirm(
-    `Fixkosten ab wann anlegen?\n\nOK = ab nächstem Monat (${fmtMonat(nextMonth)})\nAbbrechen = ab diesem Monat (${fmtMonat(selectedMonth)})`
-  );
-  const giltAb = abNaechstem ? nextMonth : selectedMonth;
-
-  const name = prompt(`Name der Fixkosten (gilt ab ${fmtMonat(giltAb)}):`);
-  if (!name) return;
-
-  const betrag = Number(prompt("Betrag (€):"));
-  if (isNaN(betrag)) return;
-
-  const fixkosten0 = JSON.parse(localStorage.getItem("fixkosten")) || [];
-  const migrated = ensureVersionFields(fixkosten0, "1900-01");
-  const fixkosten = migrated.out;
-
-  const baseId = newId();
-  fixkosten.push({ id: newId(), baseId, name, betrag, startMonat: giltAb, deleted: false });
-
-  localStorage.setItem("fixkosten", JSON.stringify(fixkosten));
-  render();
-}
-
-function editFixkostenByBaseId(baseId) {
-  const selectedMonth = getSelectedMonth();
-  const nextMonth = nextMonthISO(selectedMonth);
-
-  const abNaechstem = confirm(
-    `Änderung ab wann?\n\nOK = ab nächstem Monat (${fmtMonat(nextMonth)})\nAbbrechen = ab diesem Monat (${fmtMonat(selectedMonth)})`
-  );
-  const giltAb = abNaechstem ? nextMonth : selectedMonth;
-
-  const fixkosten0 = JSON.parse(localStorage.getItem("fixkosten")) || [];
-  const migrated = ensureVersionFields(fixkosten0, "1900-01");
-  const fixkosten = migrated.out;
-
-  const effective = effectiveByMonth(fixkosten, selectedMonth);
-  const current = effective.find(x => x.baseId === baseId);
-  if (!current) return;
-
-  const neuerName = prompt(`Name ändern (wirkt ab ${fmtMonat(giltAb)}):`, current.name);
-  if (neuerName === null) return;
-
-  const neuerBetrag = Number(prompt(`Betrag ändern (wirkt ab ${fmtMonat(giltAb)}):`, current.betrag));
-  if (isNaN(neuerBetrag)) return;
-
-  fixkosten.push({
-    id: newId(),
-    baseId,
-    name: neuerName,
-    betrag: neuerBetrag,
-    startMonat: giltAb,
-    deleted: false
-  });
-
-  localStorage.setItem("fixkosten", JSON.stringify(fixkosten));
-  render();
-}
-
-function deleteFixkostenByBaseId(baseId) {
-  const selectedMonth = getSelectedMonth();
-  const nextMonth = nextMonthISO(selectedMonth);
-
-  const abNaechstem = confirm(
-    `Fixkosten ab wann löschen?\n\nOK = ab nächstem Monat (${fmtMonat(nextMonth)})\nAbbrechen = ab diesem Monat (${fmtMonat(selectedMonth)})`
-  );
-  const startMonat = abNaechstem ? nextMonth : selectedMonth;
-
-  if (!confirm(`Wirklich löschen ab ${fmtMonat(startMonat)}?`)) return;
-
-  const fixkosten0 = JSON.parse(localStorage.getItem("fixkosten")) || [];
-  const migrated = ensureVersionFields(fixkosten0, "1900-01");
-  const fixkosten = migrated.out;
-
-  const effective = effectiveByMonth(fixkosten, selectedMonth);
-  const current = effective.find(x => x.baseId === baseId);
-  if (!current) return;
-
-  fixkosten.push({
-    id: newId(),
-    baseId,
-    name: current.name,
-    betrag: current.betrag,
-    startMonat,
-    deleted: true
-  });
-
-  localStorage.setItem("fixkosten", JSON.stringify(fixkosten));
-  render();
-}
-
-/********************************
- * SPARPLÄNE
- ********************************/
-function addSparplan() {
-  const name = prompt("Name des Sparplans:");
-  if (!name) return;
-
-  const betrag = Number(prompt("Monatlicher Betrag (€):"));
-  if (isNaN(betrag)) return;
-
-  const startMonat = prompt("Start-Monat (YYYY-MM):", getSelectedMonth());
-  if (!startMonat) return;
-
-  const sparen = JSON.parse(localStorage.getItem("sparen")) || [];
-  sparen.push({ id: newId(), name, betrag, startMonat });
-
-  localStorage.setItem("sparen", JSON.stringify(sparen));
-  render();
-}
-
-function editSparplanById(id) {
-  const sparen0 = JSON.parse(localStorage.getItem("sparen")) || [];
-  const { out: sparen, changed } = ensureIds(sparen0);
-  if (changed) localStorage.setItem("sparen", JSON.stringify(sparen));
-
-  const index = sparen.findIndex(x => x.id === id);
-  if (index < 0) return;
-
-  const s = sparen[index];
-
-  const neuerName = prompt("Name ändern:", s.name);
-  if (neuerName === null) return;
-
-  const neuerBetrag = Number(prompt("Monatlicher Betrag (€):", s.betrag));
-  if (isNaN(neuerBetrag)) return;
-
-  const neuerStart = prompt("Start-Monat (YYYY-MM):", s.startMonat || getSelectedMonth());
-  if (neuerStart === null) return;
-
-  if (confirm("Sparplan löschen?")) {
-    sparen.splice(index, 1);
-  } else {
-    sparen[index] = { ...s, name: neuerName, betrag: neuerBetrag, startMonat: neuerStart || s.startMonat };
-  }
-
-  localStorage.setItem("sparen", JSON.stringify(sparen));
-  render();
-}
-
-function deleteSparplanById(id) {
-  const sparen0 = JSON.parse(localStorage.getItem("sparen")) || [];
-  const { out: sparen, changed } = ensureIds(sparen0);
-  if (changed) localStorage.setItem("sparen", JSON.stringify(sparen));
-
-  const idx = sparen.findIndex(x => x.id === id);
-  if (idx < 0) return;
-  if (!confirm("Sparplan wirklich löschen?")) return;
-
-  sparen.splice(idx, 1);
-  localStorage.setItem("sparen", JSON.stringify(sparen));
-  render();
-}
-
-/********************************
- * BUCHUNGEN
- ********************************/
-function addBuchung() {
-  const datum = prompt("Datum (YYYY-MM-DD):", todayISO());
-  if (!datum) return;
-
-  const betrag = Number(prompt("Betrag (€) — Ausgabe negativ, Einnahme positiv:", -10));
-  if (isNaN(betrag)) return;
-
-  const kategorie = prompt("Kategorie:", "Allgemein") || "Allgemein";
-  const notiz = prompt("Notiz (optional):", "") || "";
-
-  const buchungen = JSON.parse(localStorage.getItem("buchungen")) || [];
-  buchungen.push({ id: newId(), datum, betrag, kategorie, notiz });
-
-  localStorage.setItem("buchungen", JSON.stringify(buchungen));
-  render();
-}
-
-function editBuchungById(id) {
-  const buchungen0 = JSON.parse(localStorage.getItem("buchungen")) || [];
-  const { out: buchungen, changed } = ensureIds(buchungen0);
-  if (changed) localStorage.setItem("buchungen", JSON.stringify(buchungen));
-
-  const index = buchungen.findIndex(x => x.id === id);
-  if (index < 0) return;
-
-  const b = buchungen[index];
-
-  const neuesDatum = prompt("Datum (YYYY-MM-DD):", b.datum);
-  if (neuesDatum === null) return;
-
-  const neuerBetrag = Number(prompt("Betrag (€):", b.betrag));
-  if (isNaN(neuerBetrag)) return;
-
-  const neueKategorie = prompt("Kategorie:", b.kategorie);
-  if (neueKategorie === null) return;
-
-  const neueNotiz = prompt("Notiz:", b.notiz);
-  if (neueNotiz === null) return;
-
-  if (confirm("Buchung löschen?")) {
-    buchungen.splice(index, 1);
-  } else {
-    buchungen[index] = {
-      ...b,
-      datum: neuesDatum,
-      betrag: neuerBetrag,
-      kategorie: neueKategorie || "Allgemein",
-      notiz: neueNotiz || ""
+let state = loadState();
+
+/* ---------- Modal ---------- */
+function openModal({title, bodyHTML, actions=[]}){
+  $("modalTitle").textContent = title;
+  $("modalBody").innerHTML = bodyHTML;
+  const act = $("modalActions");
+  act.innerHTML = "";
+  actions.forEach(a=>{
+    const btn = document.createElement("button");
+    btn.className = a.className || "btn btnSmall";
+    btn.textContent = a.text;
+    btn.type = "button";
+    btn.onclick = async ()=> {
+      if(a.onClick) await a.onClick();
     };
-  }
-
-  localStorage.setItem("buchungen", JSON.stringify(buchungen));
-  render();
-}
-
-function deleteBuchungById(id) {
-  const buchungen0 = JSON.parse(localStorage.getItem("buchungen")) || [];
-  const { out: buchungen, changed } = ensureIds(buchungen0);
-  if (changed) localStorage.setItem("buchungen", JSON.stringify(buchungen));
-
-  const idx = buchungen.findIndex(x => x.id === id);
-  if (idx < 0) return;
-  if (!confirm("Buchung wirklich löschen?")) return;
-
-  buchungen.splice(idx, 1);
-  localStorage.setItem("buchungen", JSON.stringify(buchungen));
-  render();
-}
-
-/********************************
- * RENDER
- ********************************/
-function render() {
-  const selectedMonth = getSelectedMonth();
-
-  const einnahmen0 = JSON.parse(localStorage.getItem("einnahmen")) || [];
-  const fixkosten0 = JSON.parse(localStorage.getItem("fixkosten")) || [];
-  const sparen0 = JSON.parse(localStorage.getItem("sparen")) || [];
-  const buchungen0 = JSON.parse(localStorage.getItem("buchungen")) || [];
-
-  const eFix = ensureIds(einnahmen0);
-  if (eFix.changed) localStorage.setItem("einnahmen", JSON.stringify(eFix.out));
-
-  const fMig = ensureVersionFields(fixkosten0, "1900-01");
-  if (fMig.changed) localStorage.setItem("fixkosten", JSON.stringify(fMig.out));
-
-  const sFix = ensureIds(sparen0);
-  if (sFix.changed) localStorage.setItem("sparen", JSON.stringify(sFix.out));
-
-  const bFix = ensureIds(buchungen0);
-  if (bFix.changed) localStorage.setItem("buchungen", JSON.stringify(bFix.out));
-
-  const einnahmen = eFix.out;
-  const fixkostenVersioned = fMig.out;
-  const fixkostenEffektiv = effectiveByMonth(fixkostenVersioned, selectedMonth);
-  const sparen = sFix.out;
-  const buchungen = bFix.out;
-
-  const monatInput = document.getElementById("monat");
-  if (monatInput && monatInput.value !== selectedMonth) monatInput.value = selectedMonth;
-
-  const monatHinweis = document.getElementById("monat-hinweis");
-  if (monatHinweis) {
-    const nextMonth = nextMonthISO(selectedMonth);
-    monatHinweis.textContent =
-      `Auswertung für ${fmtMonat(selectedMonth)} • Fixkosten können ab diesem oder ab ${fmtMonat(nextMonth)} geändert werden`;
-  }
-
-  const buchungenMonat = buchungen.filter(b => (b.datum || "").startsWith(selectedMonth));
-
-  const einnahmenSumme = summe(einnahmen);
-  const fixSumme = summe(fixkostenEffektiv);
-  const sparSumme = summe(sparen);
-  const buchungenSummeMonat = summe(buchungenMonat);
-
-  const verfuegbarMonat = einnahmenSumme - fixSumme - sparSumme + buchungenSummeMonat;
-
-  document.getElementById("einnahmen-summe").textContent = euro(einnahmenSumme);
-  document.getElementById("fixkosten").textContent = euro(-fixSumme);
-  document.getElementById("sparen").textContent = euro(-sparSumme);
-  document.getElementById("buchungen-summe").textContent = euro(buchungenSummeMonat);
-  document.getElementById("verfuegbar").textContent = euro(verfuegbarMonat);
-
-  // Einnahmen Liste (mit 🗑️)
-  const eListe = document.getElementById("einnahmen-liste");
-  eListe.innerHTML = "";
-  einnahmen.forEach((e) => {
-    const row = makeRowWithDelete(
-      `${e.name}: ${euro(e.betrag)}`,
-      () => editEinnahmeById(e.id),
-      () => deleteEinnahmeById(e.id),
-      ""
-    );
-    eListe.appendChild(row);
+    act.appendChild(btn);
   });
-
-  // Fixkosten Liste (mit 🗑️)
-  const fListe = document.getElementById("fixkosten-liste");
-  fListe.innerHTML = "";
-  fixkostenEffektiv.forEach((f) => {
-    const row = makeRowWithDelete(
-      `${f.name}: ${euro(-f.betrag)}`,
-      () => editFixkostenByBaseId(f.baseId),
-      () => deleteFixkostenByBaseId(f.baseId),
-      ""
-    );
-    fListe.appendChild(row);
-  });
-
-  // Sparen Liste (mit 🗑️)
-  const sListe = document.getElementById("sparen-liste");
-  if (sListe) {
-    sListe.innerHTML = "";
-    sparen.forEach((s) => {
-      const row = makeRowWithDelete(
-        `${s.name}: ${euro(-s.betrag)} / Monat (Start ${fmtMonat(s.startMonat || selectedMonth)})`,
-        () => editSparplanById(s.id),
-        () => deleteSparplanById(s.id),
-        ""
-      );
-      sListe.appendChild(row);
-    });
-  }
-
-  // Gesamt gespart (falls vorhanden)
-  const gesamtBox = document.getElementById("sparen-gesamt");
-  if (gesamtBox) {
-    gesamtBox.innerHTML = "";
-    if (sparen.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "hint";
-      empty.textContent = "Noch keine Sparpläne angelegt.";
-      gesamtBox.appendChild(empty);
-    } else {
-      sparen.forEach((s) => {
-        const start = s.startMonat || selectedMonth;
-        const months = monthsInclusive(start, selectedMonth);
-        const total = Number(s.betrag) * months;
-
-        const row = document.createElement("div");
-        row.className = "total-item";
-        row.textContent = `${s.name}: ${euro(total)}  (${months} Monat(e) × ${euro(s.betrag)})`;
-        gesamtBox.appendChild(row);
-      });
-    }
-  }
-
-  // Buchungen Liste (mit 🗑️)
-  const bListe = document.getElementById("buchungen-liste");
-  bListe.innerHTML = "";
-
-  const sortiert = [...buchungenMonat].sort((a, b) => (b.datum || "").localeCompare(a.datum || ""));
-  if (sortiert.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "hint";
-    empty.textContent = "Keine Buchungen in diesem Monat.";
-    bListe.appendChild(empty);
-  } else {
-    sortiert.forEach((b) => {
-      const mainText = `${fmtDatum(b.datum)} • ${b.kategorie}: ${euro(b.betrag)}`;
-      const row = makeRowWithDelete(
-        mainText,
-        () => editBuchungById(b.id),
-        () => deleteBuchungById(b.id),
-        b.notiz || ""
-      );
-      bListe.appendChild(row);
-    });
-  }
+  $("modalBackdrop").classList.remove("hidden");
 }
-
-/********************************
- * START + MONTH INPUT LISTENER
- ********************************/
-document.addEventListener("DOMContentLoaded", () => {
-  const input = document.getElementById("monat");
-  if (input) {
-    input.value = getSelectedMonth();
-    input.addEventListener("change", () => {
-      if (input.value) setSelectedMonth(input.value);
-    });
-  }
-  render();
+function closeModal(){
+  $("modalBackdrop").classList.add("hidden");
+  $("modalBody").innerHTML = "";
+  $("modalActions").innerHTML = "";
+}
+$("modalClose").onclick = closeModal;
+$("modalBackdrop").addEventListener("click", (e)=>{
+  if(e.target === $("modalBackdrop")) closeModal();
 });
+
+/* ---------- Navigation ---------- */
+const screens = ["home","income","fixed","expenses","savings"];
+
+function setPageTitle(title, sub){
+  $("pageTitle").textContent = title;
+  $("pageSub").textContent = sub || "Lokal • EUR";
+}
+
+function showScreen(name){
+  screens.forEach(s=>{
+    const el = $(`screen-${s}`);
+    el.classList.toggle("active", s===name);
+  });
+}
+
+function go(route){
+  location.hash = `#/${route}`;
+}
+
+$("btnHome").onclick = ()=>go("");
+
+window.addEventListener("hashchange", renderRoute);
+
+/* ---------- Calculations ---------- */
+function sumIncome(month){
+  return state.incomes.filter(x=>x.month===month).reduce((a,x)=>a+x.amountCents,0);
+}
+function sumFixed(month){
+  return state.fixedCosts.filter(x=>x.month===month).reduce((a,x)=>a+x.amountCents,0);
+}
+function sumExpenses(month){
+  return state.expenses.filter(x=>x.month===month).reduce((a,x)=>a+x.amountCents,0);
+}
+function sumDeposits(month){
+  return state.savingsMoves
+    .filter(m=>m.month===month && m.type==="deposit")
+    .reduce((a,m)=>a+m.amountCents,0);
+}
+function availableBudget(month){
+  return sumIncome(month) - sumFixed(month) - sumExpenses(month) - sumDeposits(month);
+}
+function savingsTotalsByPlan(){
+  const activePlans = state.savingsPlans.filter(p=>!p.isArchived);
+  return activePlans.map(p=>{
+    const total = state.savingsMoves
+      .filter(m=>m.planId===p.id)
+      .reduce((a,m)=>a + (m.type==="deposit" ? m.amountCents : -m.amountCents), 0);
+    return {planId:p.id, name:p.name, totalCents:total};
+  });
+}
+function getRate(planId, month){
+  return state.savingsRates.find(r=>r.planId===planId && r.month===month) || null;
+}
+function ensureRatesCopiedForMonth(month){
+  // Kopiert Sparraten aus Vormonat, wenn für diesen Monat noch keine Raten existieren
+  const activePlans = state.savingsPlans.filter(p=>!p.isArchived);
+  const hasAny = state.savingsRates.some(r=>r.month===month && activePlans.some(p=>p.id===r.planId));
+  if(hasAny) return;
+
+  const prev = addMonths(month, -1);
+  const prevRates = state.savingsRates.filter(r=>r.month===prev);
+
+  activePlans.forEach(p=>{
+    const pr = prevRates.find(r=>r.planId===p.id);
+    if(pr){
+      state.savingsRates.push({
+        id: uid("sr"),
+        planId: p.id,
+        month,
+        amountCents: pr.amountCents
+      });
+    } else {
+      // kein Vorwert -> Rate 0 anlegen? lieber nicht. Nutzer legt bei Bedarf an.
+    }
+  });
+  saveState();
+}
+function ensureFixedCopiedForMonth(month){
+  // Fixkosten aus Vormonat übernehmen – aber nur, wenn Monat noch keine Fixkosten hat
+  const hasAny = state.fixedCosts.some(x=>x.month===month);
+  if(hasAny) return false;
+  const prev = addMonths(month, -1);
+  const prevItems = state.fixedCosts.filter(x=>x.month===prev);
+  if(prevItems.length===0) return false;
+
+  const date = `${month}-01`; // immer 01.
+  prevItems.forEach(x=>{
+    state.fixedCosts.push({
+      id: uid("fix"),
+      date,
+      month,
+      amountCents: x.amountCents,
+      typeId: x.typeId,
+      note: x.note || ""
+    });
+  });
+  saveState();
+  return true;
+}
+
+/* ---------- Render: Home ---------- */
+function renderHome(){
+  const month = ymNow(); // immer aktueller Monat
+  setPageTitle("Finanzplan", `${monthLabelDE(month)} • Aktueller Monat`);
+  showScreen("home");
+
+  const avail = availableBudget(month);
+  const totals = savingsTotalsByPlan();
+
+  const html = `
+    <div class="list">
+      <div class="card">
+        <div class="sub" style="margin:0">Noch verfügbares Budget</div>
+        <div class="bigValue">${centsToEUR(avail)}</div>
+        <div class="kv"><span>Einnahmen</span><span>${centsToEUR(sumIncome(month))}</span></div>
+        <div class="kv"><span>Fixe Kosten</span><span>${centsToEUR(sumFixed(month))}</span></div>
+        <div class="kv"><span>Sonstige Ausgaben</span><span>${centsToEUR(sumExpenses(month))}</span></div>
+        <div class="kv"><span>Eingezahlt</span><span>${centsToEUR(sumDeposits(month))}</span></div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div class="h2">Sparpläne</div>
+          <span class="pill">Gesamtsummen</span>
+        </div>
+        <div class="hr"></div>
+        ${
+          totals.length===0
+            ? `<div class="muted">Noch keine Sparpläne angelegt.</div>`
+            : totals.map(t=>`
+              <div class="row" style="margin:10px 0">
+                <div class="itemTitle">${escapeHtml(t.name)}</div>
+                <div class="itemTitle">${centsToEUR(t.totalCents)}</div>
+              </div>
+            `).join("")
+        }
+      </div>
+
+      <button class="btn btnPrimary" id="goSavings">Sparpläne</button>
+      <button class="btn" id="goIncome">Einnahmen</button>
+      <button class="btn" id="goFixed">Fixe Kosten</button>
+      <button class="btn" id="goExpenses">Sonstige Ausgaben</button>
+      <button class="btn btnDanger" id="doReset">App komplett zurücksetzen</button>
+    </div>
+  `;
+  $("screen-home").innerHTML = html;
+
+  $("goSavings").onclick = ()=>go("savings");
+  $("goIncome").onclick = ()=>go("income");
+  $("goFixed").onclick = ()=>go("fixed");
+  $("goExpenses").onclick = ()=>go("expenses");
+  $("doReset").onclick = async ()=>{
+    openModal({
+      title: "App zurücksetzen",
+      bodyHTML: `
+        <div class="muted">Wirklich alles löschen? Das kann nicht rückgängig gemacht werden.</div>
+        <div class="field">
+          <label>Zum Bestätigen tippe: <b>LÖSCHEN</b></label>
+          <input id="resetWord" placeholder="LÖSCHEN" />
+        </div>
+      `,
+      actions: [
+        { text: "Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+        { text: "Löschen", className:"btn btnDanger", onClick: ()=>{
+            const v = ($("resetWord").value||"").trim().toUpperCase();
+            if(v!=="LÖSCHEN"){ toast("Bitte LÖSCHEN tippen"); return; }
+            closeModal(); resetAll();
+          }
+        }
+      ]
+    });
+  };
+}
+
+/* ---------- Render: Month Header ---------- */
+function renderMonthHeader(current, onPrev, onNext){
+  return `
+    <div class="card">
+      <div class="row">
+        <button class="iconBtn" id="mPrev" type="button">◀</button>
+        <div style="text-align:center">
+          <div class="itemTitle">${monthLabelDE(current)}</div>
+          <div class="itemSub">Monat</div>
+        </div>
+        <button class="iconBtn" id="mNext" type="button">▶</button>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- Render: Income ---------- */
+function renderIncome(){
+  const month = state.incomeMonth;
+  setPageTitle("Einnahmen", `${monthLabelDE(month)} • Lohn/Kindergeld/Nebenjob/Sonstiges`);
+  showScreen("income");
+
+  const items = state.incomes
+    .filter(x=>x.month===month)
+    .sort((a,b)=> b.date.localeCompare(a.date));
+
+  const sum = items.reduce((a,x)=>a+x.amountCents,0);
+
+  const html = `
+    <div class="list">
+      ${renderMonthHeader(month)}
+      <div class="card">
+        <div class="row">
+          <div class="itemTitle">Summe Einnahmen</div>
+          <div class="itemTitle">${centsToEUR(sum)}</div>
+        </div>
+      </div>
+
+      <button class="btn btnPrimary" id="addIncome">+ Einnahme hinzufügen</button>
+
+      <div class="card">
+        <div class="itemTitle">Liste</div>
+        <div class="hr"></div>
+        ${
+          items.length===0 ? `<div class="muted">Keine Einnahmen in diesem Monat.</div>` :
+          items.map(x=>`
+            <div class="row" style="margin:12px 0">
+              <div>
+                <div class="itemTitle">${escapeHtml(x.type)}</div>
+                <div class="itemSub">${escapeHtml(x.date)} • ${escapeHtml(x.note||"")}</div>
+              </div>
+              <div style="text-align:right">
+                <div class="itemTitle">${centsToEUR(x.amountCents)}</div>
+                <button class="btn btnSmall" data-act="incomeMenu" data-id="${x.id}" type="button">⋯</button>
+              </div>
+            </div>
+          `).join("")
+        }
+      </div>
+    </div>
+  `;
+  $("screen-income").innerHTML = html;
+
+  $("mPrev").onclick = ()=>{ state.incomeMonth = addMonths(state.incomeMonth,-1); saveState(); renderIncome(); };
+  $("mNext").onclick = ()=>{ state.incomeMonth = addMonths(state.incomeMonth, 1); saveState(); renderIncome(); };
+
+  $("addIncome").onclick = ()=>openIncomeForm(null);
+
+  document.querySelectorAll('[data-act="incomeMenu"]').forEach(btn=>{
+    btn.onclick = ()=>openIncomeMenu(btn.getAttribute("data-id"));
+  });
+}
+
+function openIncomeForm(id){
+  const isEdit = !!id;
+  const item = isEdit ? state.incomes.find(x=>x.id===id) : null;
+  const dateDefault = isEdit ? item.date : `${state.incomeMonth}-01`;
+  const typeDefault = isEdit ? item.type : "Lohn";
+  const amountDefault = isEdit ? (item.amountCents/100).toLocaleString("de-DE") : "";
+  const noteDefault = isEdit ? (item.note||"") : "";
+
+  openModal({
+    title: isEdit ? "Einnahme bearbeiten" : "Einnahme hinzufügen",
+    bodyHTML: `
+      <div class="field">
+        <label>Art</label>
+        <select id="incType">
+          ${["Lohn","Kindergeld","Nebenjob","Sonstiges"].map(t=>`<option ${t===typeDefault?"selected":""}>${t}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field">
+        <label>Betrag (€)</label>
+        <input id="incAmount" inputmode="decimal" placeholder="z.B. 2500,00" value="${escapeAttr(amountDefault)}"/>
+      </div>
+      <div class="field">
+        <label>Datum</label>
+        <input id="incDate" type="date" value="${escapeAttr(dateDefault)}"/>
+      </div>
+      <div class="field">
+        <label>Notiz (optional)</label>
+        <input id="incNote" placeholder="optional" value="${escapeAttr(noteDefault)}"/>
+      </div>
+    `,
+    actions: [
+      { text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+      { text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+          const cents = eurToCents($("incAmount").value);
+          if(cents===null || cents<=0){ toast("Ungültiger Betrag"); return; }
+          const date = $("incDate").value || todayYMD();
+          const month = ymFromDate(date);
+          const type = $("incType").value;
+          const note = $("incNote").value || "";
+
+          if(isEdit){
+            Object.assign(item, {date, month, type, amountCents:cents, note});
+          }else{
+            state.incomes.push({ id: uid("inc"), date, month, type, amountCents:cents, note });
+          }
+          // Wenn man im Formular ein anderes Datum wählt, springt Seite automatisch auf diesen Monat? -> nein, bleibt beim gewählten Monat.
+          saveState();
+          closeModal();
+          renderIncome();
+          toast("Gespeichert");
+        }
+      }
+    ]
+  });
+}
+
+function openIncomeMenu(id){
+  openModal({
+    title: "Aktionen",
+    bodyHTML: `<div class="muted">Einnahme bearbeiten oder löschen.</div>`,
+    actions: [
+      { text:"Bearbeiten", className:"btn btnPrimary", onClick: ()=>{ closeModal(); openIncomeForm(id); } },
+      { text:"Löschen", className:"btn btnDanger", onClick: ()=>{
+          const i = state.incomes.findIndex(x=>x.id===id);
+          if(i>=0) state.incomes.splice(i,1);
+          saveState(); closeModal(); renderIncome(); toast("Gelöscht");
+        }
+      },
+      { text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+    ]
+  });
+}
+
+/* ---------- Render: Fixed Costs ---------- */
+function renderFixed(){
+  const month = state.fixedMonth;
+  setPageTitle("Fixe Kosten", `${monthLabelDE(month)} • Übernehmen möglich`);
+  showScreen("fixed");
+
+  const items = state.fixedCosts
+    .filter(x=>x.month===month)
+    .sort((a,b)=> b.date.localeCompare(a.date));
+
+  const sum = items.reduce((a,x)=>a+x.amountCents,0);
+
+  const html = `
+    <div class="list">
+      ${renderMonthHeader(month)}
+      <div class="card">
+        <div class="row">
+          <div class="itemTitle">Summe Fixe Kosten</div>
+          <div class="itemTitle">${centsToEUR(sum)}</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <button class="btn btnPrimary" id="addFix">+ Fixkosten</button>
+        <button class="btn" id="manageFixTypes">Typen verwalten</button>
+      </div>
+
+      <button class="btn" id="copyFix">Fixkosten aus Vormonat übernehmen</button>
+
+      <div class="card">
+        <div class="itemTitle">Liste</div>
+        <div class="hr"></div>
+        ${
+          items.length===0 ? `<div class="muted">Keine Fixkosten in diesem Monat.</div>` :
+          items.map(x=>{
+            const t = state.fixedTypes.find(t=>t.id===x.typeId)?.name || "Unbekannt";
+            return `
+              <div class="row" style="margin:12px 0">
+                <div>
+                  <div class="itemTitle">${escapeHtml(t)}</div>
+                  <div class="itemSub">${escapeHtml(x.date)} • ${escapeHtml(x.note||"")}</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="itemTitle">${centsToEUR(x.amountCents)}</div>
+                  <button class="btn btnSmall" data-act="fixMenu" data-id="${x.id}" type="button">⋯</button>
+                </div>
+              </div>
+            `;
+          }).join("")
+        }
+      </div>
+    </div>
+  `;
+  $("screen-fixed").innerHTML = html;
+
+  $("mPrev").onclick = ()=>{ state.fixedMonth = addMonths(state.fixedMonth,-1); saveState(); renderFixed(); };
+  $("mNext").onclick = ()=>{ state.fixedMonth = addMonths(state.fixedMonth, 1); saveState(); renderFixed(); };
+
+  $("addFix").onclick = ()=>openFixedForm(null);
+  $("manageFixTypes").onclick = ()=>openManageTypes("fixed");
+
+  $("copyFix").onclick = ()=>{
+    const ok = ensureFixedCopiedForMonth(month);
+    if(ok){ renderFixed(); toast("Übernommen"); }
+    else toast("Nichts zu übernehmen (oder schon vorhanden)");
+  };
+
+  document.querySelectorAll('[data-act="fixMenu"]').forEach(btn=>{
+    btn.onclick = ()=>openFixedMenu(btn.getAttribute("data-id"));
+  });
+}
+
+function openFixedForm(id){
+  const isEdit = !!id;
+  const item = isEdit ? state.fixedCosts.find(x=>x.id===id) : null;
+  const dateDefault = isEdit ? item.date : `${state.fixedMonth}-01`;
+  const amountDefault = isEdit ? (item.amountCents/100).toLocaleString("de-DE") : "";
+  const noteDefault = isEdit ? (item.note||"") : "";
+  const typeDefault = isEdit ? item.typeId : (state.fixedTypes[0]?.id || "");
+
+  openModal({
+    title: isEdit ? "Fixkosten bearbeiten" : "Fixkosten hinzufügen",
+    bodyHTML: `
+      <div class="field">
+        <label>Typ</label>
+        <select id="fixType">
+          ${state.fixedTypes.map(t=>`<option value="${t.id}" ${t.id===typeDefault?"selected":""}>${escapeHtml(t.name)}</option>`).join("")}
+          <option value="__new__">+ Neuer Typ…</option>
+        </select>
+      </div>
+      <div class="field hidden" id="fixNewTypeField">
+        <label>Neuer Typ</label>
+        <input id="fixNewType" placeholder="z.B. Kredit/Rate" />
+      </div>
+      <div class="field">
+        <label>Betrag (€)</label>
+        <input id="fixAmount" inputmode="decimal" placeholder="z.B. 799,00" value="${escapeAttr(amountDefault)}"/>
+      </div>
+      <div class="field">
+        <label>Datum</label>
+        <input id="fixDate" type="date" value="${escapeAttr(dateDefault)}"/>
+        <div class="itemSub">Beim Übernehmen wird immer der 01. gesetzt.</div>
+      </div>
+      <div class="field">
+        <label>Notiz (optional)</label>
+        <input id="fixNote" placeholder="optional" value="${escapeAttr(noteDefault)}"/>
+      </div>
+    `,
+    actions: [
+      { text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+      { text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+          const cents = eurToCents($("fixAmount").value);
+          if(cents===null || cents<=0){ toast("Ungültiger Betrag"); return; }
+
+          let typeId = $("fixType").value;
+          if(typeId==="__new__"){
+            const name = ($("fixNewType").value||"").trim();
+            if(!name){ toast("Neuer Typ fehlt"); return; }
+            typeId = uid("ft");
+            state.fixedTypes.push({id:typeId, name});
+          }
+
+          const date = $("fixDate").value || `${state.fixedMonth}-01`;
+          const month = ymFromDate(date);
+          const note = $("fixNote").value || "";
+
+          if(isEdit){
+            Object.assign(item, {date, month, typeId, amountCents:cents, note});
+          }else{
+            state.fixedCosts.push({ id: uid("fix"), date, month, typeId, amountCents:cents, note });
+          }
+          saveState();
+          closeModal();
+          renderFixed();
+          toast("Gespeichert");
+        }
+      }
+    ]
+  });
+
+  $("fixType").onchange = ()=>{
+    const v = $("fixType").value;
+    $("fixNewTypeField").classList.toggle("hidden", v!=="__new__");
+  };
+}
+
+function openFixedMenu(id){
+  openModal({
+    title: "Aktionen",
+    bodyHTML: `<div class="muted">Fixkosten bearbeiten oder löschen.</div>`,
+    actions: [
+      { text:"Bearbeiten", className:"btn btnPrimary", onClick: ()=>{ closeModal(); openFixedForm(id); } },
+      { text:"Löschen", className:"btn btnDanger", onClick: ()=>{
+          const i = state.fixedCosts.findIndex(x=>x.id===id);
+          if(i>=0) state.fixedCosts.splice(i,1);
+          saveState(); closeModal(); renderFixed(); toast("Gelöscht");
+        }
+      },
+      { text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+    ]
+  });
+}
+
+/* ---------- Render: Expenses ---------- */
+function renderExpenses(){
+  const month = state.expensesMonth;
+  setPageTitle("Sonstige Ausgaben", `${monthLabelDE(month)} • Kategorien frei`);
+  showScreen("expenses");
+
+  const items = state.expenses
+    .filter(x=>x.month===month)
+    .sort((a,b)=> b.date.localeCompare(a.date));
+
+  const sum = items.reduce((a,x)=>a+x.amountCents,0);
+
+  const html = `
+    <div class="list">
+      ${renderMonthHeader(month)}
+      <div class="card">
+        <div class="row">
+          <div class="itemTitle">Summe Ausgaben</div>
+          <div class="itemTitle">${centsToEUR(sum)}</div>
+        </div>
+      </div>
+
+      <div class="grid2">
+        <button class="btn btnPrimary" id="addExp">+ Ausgabe</button>
+        <button class="btn" id="manageCats">Kategorien verwalten</button>
+      </div>
+
+      <div class="card">
+        <div class="itemTitle">Liste</div>
+        <div class="hr"></div>
+        ${
+          items.length===0 ? `<div class="muted">Keine Ausgaben in diesem Monat.</div>` :
+          items.map(x=>{
+            const c = state.expenseCategories.find(c=>c.id===x.categoryId)?.name || "Unbekannt";
+            return `
+              <div class="row" style="margin:12px 0">
+                <div>
+                  <div class="itemTitle">${escapeHtml(c)}</div>
+                  <div class="itemSub">${escapeHtml(x.date)} • ${escapeHtml(x.note||"")}</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="itemTitle">-${centsToEUR(x.amountCents)}</div>
+                  <button class="btn btnSmall" data-act="expMenu" data-id="${x.id}" type="button">⋯</button>
+                </div>
+              </div>
+            `;
+          }).join("")
+        }
+      </div>
+    </div>
+  `;
+  $("screen-expenses").innerHTML = html;
+
+  $("mPrev").onclick = ()=>{ state.expensesMonth = addMonths(state.expensesMonth,-1); saveState(); renderExpenses(); };
+  $("mNext").onclick = ()=>{ state.expensesMonth = addMonths(state.expensesMonth, 1); saveState(); renderExpenses(); };
+
+  $("addExp").onclick = ()=>openExpenseForm(null);
+  $("manageCats").onclick = ()=>openManageTypes("expense");
+
+  document.querySelectorAll('[data-act="expMenu"]').forEach(btn=>{
+    btn.onclick = ()=>openExpenseMenu(btn.getAttribute("data-id"));
+  });
+}
+
+function openExpenseForm(id){
+  const isEdit = !!id;
+  const item = isEdit ? state.expenses.find(x=>x.id===id) : null;
+  const dateDefault = isEdit ? item.date : `${state.expensesMonth}-01`;
+  const amountDefault = isEdit ? (item.amountCents/100).toLocaleString("de-DE") : "";
+  const noteDefault = isEdit ? (item.note||"") : "";
+  const catDefault = isEdit ? item.categoryId : (state.expenseCategories[0]?.id || "");
+
+  openModal({
+    title: isEdit ? "Ausgabe bearbeiten" : "Ausgabe hinzufügen",
+    bodyHTML: `
+      <div class="field">
+        <label>Kategorie</label>
+        <select id="expCat">
+          ${state.expenseCategories.map(c=>`<option value="${c.id}" ${c.id===catDefault?"selected":""}>${escapeHtml(c.name)}</option>`).join("")}
+          <option value="__new__">+ Neue Kategorie…</option>
+        </select>
+      </div>
+      <div class="field hidden" id="expNewCatField">
+        <label>Neue Kategorie</label>
+        <input id="expNewCat" placeholder="z.B. Kleidung" />
+      </div>
+      <div class="field">
+        <label>Betrag (€)</label>
+        <input id="expAmount" inputmode="decimal" placeholder="z.B. 45,90" value="${escapeAttr(amountDefault)}"/>
+      </div>
+      <div class="field">
+        <label>Datum</label>
+        <input id="expDate" type="date" value="${escapeAttr(dateDefault)}"/>
+      </div>
+      <div class="field">
+        <label>Notiz (optional)</label>
+        <input id="expNote" placeholder="optional" value="${escapeAttr(noteDefault)}"/>
+      </div>
+    `,
+    actions: [
+      { text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+      { text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+          const cents = eurToCents($("expAmount").value);
+          if(cents===null || cents<=0){ toast("Ungültiger Betrag"); return; }
+
+          let categoryId = $("expCat").value;
+          if(categoryId==="__new__"){
+            const name = ($("expNewCat").value||"").trim();
+            if(!name){ toast("Neue Kategorie fehlt"); return; }
+            categoryId = uid("ec");
+            state.expenseCategories.push({id:categoryId, name});
+          }
+
+          const date = $("expDate").value || `${state.expensesMonth}-01`;
+          const month = ymFromDate(date);
+          const note = $("expNote").value || "";
+
+          if(isEdit){
+            Object.assign(item, {date, month, categoryId, amountCents:cents, note});
+          }else{
+            state.expenses.push({ id: uid("exp"), date, month, categoryId, amountCents:cents, note });
+          }
+          saveState();
+          closeModal();
+          renderExpenses();
+          toast("Gespeichert");
+        }
+      }
+    ]
+  });
+
+  $("expCat").onchange = ()=>{
+    const v = $("expCat").value;
+    $("expNewCatField").classList.toggle("hidden", v!=="__new__");
+  };
+}
+
+function openExpenseMenu(id){
+  openModal({
+    title: "Aktionen",
+    bodyHTML: `<div class="muted">Ausgabe bearbeiten oder löschen.</div>`,
+    actions: [
+      { text:"Bearbeiten", className:"btn btnPrimary", onClick: ()=>{ closeModal(); openExpenseForm(id); } },
+      { text:"Löschen", className:"btn btnDanger", onClick: ()=>{
+          const i = state.expenses.findIndex(x=>x.id===id);
+          if(i>=0) state.expenses.splice(i,1);
+          saveState(); closeModal(); renderExpenses(); toast("Gelöscht");
+        }
+      },
+      { text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal() },
+    ]
+  });
+}
+
+/* ---------- Types/Categories Management (with safe delete mapping) ---------- */
+function openManageTypes(kind){
+  const isFixed = kind==="fixed";
+  const list = isFixed ? state.fixedTypes : state.expenseCategories;
+  const title = isFixed ? "Fixkosten-Typen" : "Ausgaben-Kategorien";
+  const usedCount = (id)=>{
+    if(isFixed) return state.fixedCosts.filter(x=>x.typeId===id).length;
+    return state.expenses.filter(x=>x.categoryId===id).length;
+  };
+
+  openModal({
+    title: `${title} verwalten`,
+    bodyHTML: `
+      <div class="muted">Du kannst umbenennen oder löschen. Beim Löschen kannst du Einträge umhängen.</div>
+      <div class="hr"></div>
+      <div class="field">
+        <label>Neu hinzufügen</label>
+        <input id="newTypeName" placeholder="Name" />
+        <button class="btn btnPrimary" id="addTypeBtn" type="button">Hinzufügen</button>
+      </div>
+      <div class="hr"></div>
+      <div id="typeList"></div>
+    `,
+    actions: [{ text:"Schließen", className:"btn btnSmall", onClick: ()=>closeModal() }]
+  });
+
+  function renderTypeList(){
+    const wrap = $("typeList");
+    wrap.innerHTML = list.map(t=>{
+      return `
+        <div class="card" style="padding:12px; margin:10px 0">
+          <div class="row">
+            <div>
+              <div class="itemTitle">${escapeHtml(t.name)}</div>
+              <div class="itemSub">Verwendet: ${usedCount(t.id)}</div>
+            </div>
+            <div class="grid2" style="grid-template-columns:auto auto; gap:10px">
+              <button class="btn btnSmall" data-act="rename" data-id="${t.id}" type="button">Umbenennen</button>
+              <button class="btn btnSmall" data-act="del" data-id="${t.id}" type="button">Löschen</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    wrap.querySelectorAll('[data-act="rename"]').forEach(b=>{
+      b.onclick = ()=>renameType(b.getAttribute("data-id"));
+    });
+    wrap.querySelectorAll('[data-act="del"]').forEach(b=>{
+      b.onclick = ()=>deleteType(b.getAttribute("data-id"));
+    });
+  }
+
+  function renameType(id){
+    const t = list.find(x=>x.id===id);
+    if(!t) return;
+    openModal({
+      title: "Umbenennen",
+      bodyHTML: `
+        <div class="field">
+          <label>Neuer Name</label>
+          <input id="renameVal" value="${escapeAttr(t.name)}" />
+        </div>
+      `,
+      actions: [
+        {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>{ closeModal(); openManageTypes(kind); }},
+        {text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+          const v = ($("renameVal").value||"").trim();
+          if(!v){ toast("Name fehlt"); return; }
+          t.name = v;
+          saveState();
+          closeModal();
+          openManageTypes(kind);
+          toast("Umbenannt");
+        }}
+      ]
+    });
+  }
+
+  function deleteType(id){
+    const t = list.find(x=>x.id===id);
+    if(!t) return;
+    const used = usedCount(id);
+
+    if(used===0){
+      const idx = list.findIndex(x=>x.id===id);
+      list.splice(idx,1);
+      saveState();
+      closeModal();
+      openManageTypes(kind);
+      toast("Gelöscht");
+      return;
+    }
+
+    // mapping required
+    const alternatives = list.filter(x=>x.id!==id);
+    const defaultTarget = alternatives[0]?.id || null;
+
+    openModal({
+      title: "Löschen (mit Umhängen)",
+      bodyHTML: `
+        <div class="muted">Dieser Typ wird in ${used} Einträgen verwendet. Wähle, wohin die Einträge verschoben werden.</div>
+        <div class="field">
+          <label>Verschieben nach</label>
+          <select id="mapTo">
+            ${alternatives.map(a=>`<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")}
+          </select>
+        </div>
+      `,
+      actions: [
+        {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>{ closeModal(); openManageTypes(kind); }},
+        {text:"Verschieben & Löschen", className:"btn btnDanger", onClick: ()=>{
+          const to = $("mapTo").value || defaultTarget;
+          if(!to){ toast("Keine Alternative vorhanden"); return; }
+
+          if(isFixed){
+            state.fixedCosts.forEach(x=>{ if(x.typeId===id) x.typeId = to; });
+          }else{
+            state.expenses.forEach(x=>{ if(x.categoryId===id) x.categoryId = to; });
+          }
+
+          const idx = list.findIndex(x=>x.id===id);
+          list.splice(idx,1);
+          saveState();
+          closeModal();
+          openManageTypes(kind);
+          toast("Verschoben & gelöscht");
+        }}
+      ]
+    });
+  }
+
+  $("addTypeBtn").onclick = ()=>{
+    const v = ($("newTypeName").value||"").trim();
+    if(!v){ toast("Name fehlt"); return; }
+    list.push({ id: uid(isFixed?"ft":"ec"), name: v });
+    saveState();
+    $("newTypeName").value = "";
+    renderTypeList();
+    toast("Hinzugefügt");
+  };
+
+  renderTypeList();
+}
+
+/* ---------- Render: Savings ---------- */
+function renderSavings(){
+  const month = state.savingsMonth;
+  ensureRatesCopiedForMonth(month);
+
+  setPageTitle("Sparpläne", `${monthLabelDE(month)} • Rate + Eingezahlt`);
+  showScreen("savings");
+
+  const plans = state.savingsPlans.filter(p=>!p.isArchived);
+
+  const html = `
+    <div class="list">
+      ${renderMonthHeader(month)}
+
+      <button class="btn btnPrimary" id="addPlan">+ Sparplan hinzufügen</button>
+
+      ${plans.length===0 ? `
+        <div class="card"><div class="muted">Noch keine Sparpläne. Lege einen an.</div></div>
+      ` : plans.map(p=>{
+        const total = state.savingsMoves
+          .filter(m=>m.planId===p.id)
+          .reduce((a,m)=>a + (m.type==="deposit" ? m.amountCents : -m.amountCents), 0);
+
+        const rate = getRate(p.id, month);
+        const rateCents = rate ? rate.amountCents : 0;
+
+        const depositExists = state.savingsMoves.some(m=>m.planId===p.id && m.month===month && m.type==="deposit");
+        const depositBtnLabel = depositExists ? "Eingezahlt ✓" : "Eingezahlt";
+        const depositDisabled = depositExists ? "disabled" : "";
+
+        return `
+          <div class="card" style="padding:14px">
+            <div class="row">
+              <div>
+                <div class="itemTitle">${escapeHtml(p.name)}</div>
+                <div class="itemSub">Gesamt: <b>${centsToEUR(total)}</b></div>
+              </div>
+              <button class="btn btnSmall" data-act="planMenu" data-id="${p.id}" type="button">⋯</button>
+            </div>
+
+            <div class="hr"></div>
+
+            <div class="row">
+              <div>
+                <div class="muted">Rate ${monthLabelDE(month)}</div>
+                <div class="itemTitle">${centsToEUR(rateCents)}</div>
+              </div>
+              <button class="btn btnSmall" data-act="editRate" data-id="${p.id}" type="button">Rate ändern</button>
+            </div>
+
+            <div style="margin-top:12px">
+              <button class="btn ${depositExists ? "" : "btnPrimary"}" data-act="deposit" data-id="${p.id}" ${depositDisabled} type="button">${depositBtnLabel}</button>
+              ${depositExists ? `<button class="btn btnSmall" style="margin-top:10px" data-act="undoDeposit" data-id="${p.id}" type="button">Rückgängig</button>` : ""}
+            </div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+  $("screen-savings").innerHTML = html;
+
+  $("mPrev").onclick = ()=>{ state.savingsMonth = addMonths(state.savingsMonth,-1); saveState(); renderSavings(); };
+  $("mNext").onclick = ()=>{ state.savingsMonth = addMonths(state.savingsMonth, 1); saveState(); renderSavings(); };
+
+  $("addPlan").onclick = ()=>openAddPlan();
+
+  document.querySelectorAll('[data-act="editRate"]').forEach(b=>{
+    b.onclick = ()=>openEditRate(b.getAttribute("data-id"));
+  });
+  document.querySelectorAll('[data-act="deposit"]').forEach(b=>{
+    b.onclick = ()=>doDeposit(b.getAttribute("data-id"));
+  });
+  document.querySelectorAll('[data-act="undoDeposit"]').forEach(b=>{
+    b.onclick = ()=>undoDeposit(b.getAttribute("data-id"));
+  });
+  document.querySelectorAll('[data-act="planMenu"]').forEach(b=>{
+    b.onclick = ()=>openPlanMenu(b.getAttribute("data-id"));
+  });
+}
+
+function openAddPlan(){
+  openModal({
+    title: "Sparplan hinzufügen",
+    bodyHTML: `
+      <div class="field">
+        <label>Name</label>
+        <input id="spName" placeholder="z.B. Auto" />
+      </div>
+      <div class="field">
+        <label>Start-Rate für aktuellen Monat (optional)</label>
+        <input id="spRate" inputmode="decimal" placeholder="z.B. 200,00" />
+      </div>
+      <div class="field">
+        <label>Zielbetrag (optional)</label>
+        <input id="spTarget" inputmode="decimal" placeholder="z.B. 8000,00" />
+      </div>
+    `,
+    actions: [
+      {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal()},
+      {text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+        const name = ($("spName").value||"").trim();
+        if(!name){ toast("Name fehlt"); return; }
+
+        const planId = uid("sp");
+        const targetCents = ($("spTarget").value||"").trim() ? eurToCents($("spTarget").value) : null;
+        if(targetCents!==null && targetCents<=0){ toast("Zielbetrag ungültig"); return; }
+
+        state.savingsPlans.push({ id: planId, name, targetCents: (targetCents||undefined), isArchived:false });
+
+        const month = state.savingsMonth;
+        const rateCents = ($("spRate").value||"").trim() ? eurToCents($("spRate").value) : null;
+        if(rateCents!==null && rateCents>0){
+          state.savingsRates.push({ id: uid("sr"), planId, month, amountCents: rateCents });
+        }
+
+        saveState();
+        closeModal();
+        renderSavings();
+        toast("Gespeichert");
+      }}
+    ]
+  });
+}
+
+function openEditRate(planId){
+  const month = state.savingsMonth;
+  const rate = getRate(planId, month);
+  const current = rate ? (rate.amountCents/100).toLocaleString("de-DE") : "";
+
+  openModal({
+    title: "Rate ändern (nur dieser Monat)",
+    bodyHTML: `
+      <div class="muted">Änderungen wirken nur für ${monthLabelDE(month)}. Vergangene Monate bleiben unverändert.</div>
+      <div class="field">
+        <label>Rate (€)</label>
+        <input id="rateVal" inputmode="decimal" placeholder="z.B. 200,00" value="${escapeAttr(current)}"/>
+      </div>
+      <div class="muted">Tipp: Leere Rate = 0.</div>
+    `,
+    actions: [
+      {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal()},
+      {text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+        const raw = ($("rateVal").value||"").trim();
+        const cents = raw ? eurToCents(raw) : 0;
+        if(cents===null || cents<0){ toast("Ungültiger Betrag"); return; }
+
+        if(rate){
+          rate.amountCents = cents;
+        }else{
+          state.savingsRates.push({ id: uid("sr"), planId, month, amountCents: cents });
+        }
+        saveState();
+        closeModal();
+        renderSavings();
+        toast("Rate gespeichert");
+      }}
+    ]
+  });
+}
+
+function doDeposit(planId){
+  const month = state.savingsMonth;
+  const rate = getRate(planId, month);
+  const amount = rate ? rate.amountCents : 0;
+  if(amount<=0){ toast("Rate ist 0 – erst Rate setzen"); return; }
+
+  const exists = state.savingsMoves.some(m=>m.planId===planId && m.month===month && m.type==="deposit");
+  if(exists){ toast("Schon eingezahlt"); return; }
+
+  const date = `${month}-01`; // immer 01.
+  state.savingsMoves.push({ id: uid("sm"), planId, date, month, amountCents: amount, type:"deposit" });
+  saveState();
+  renderSavings();
+  toast("Eingezahlt");
+}
+
+function undoDeposit(planId){
+  const month = state.savingsMonth;
+  const idx = state.savingsMoves.findIndex(m=>m.planId===planId && m.month===month && m.type==="deposit");
+  if(idx>=0){
+    state.savingsMoves.splice(idx,1);
+    saveState();
+    renderSavings();
+    toast("Rückgängig");
+  }
+}
+
+function openPlanMenu(planId){
+  const p = state.savingsPlans.find(x=>x.id===planId);
+  if(!p) return;
+
+  openModal({
+    title: "Sparplan Aktionen",
+    bodyHTML: `<div class="muted">${escapeHtml(p.name)}</div>`,
+    actions: [
+      {text:"Plan umbenennen", className:"btn btnPrimary", onClick: ()=>{ closeModal(); openRenamePlan(planId); }},
+      {text:"Archivieren", className:"btn", onClick: ()=>{
+        p.isArchived = true;
+        saveState(); closeModal(); renderSavings(); toast("Archiviert");
+      }},
+      {text:"Endgültig löschen", className:"btn btnDanger", onClick: ()=>{
+        closeModal();
+        openHardDeletePlan(planId);
+      }},
+      {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal()},
+    ]
+  });
+}
+
+function openRenamePlan(planId){
+  const p = state.savingsPlans.find(x=>x.id===planId);
+  if(!p) return;
+
+  openModal({
+    title: "Sparplan umbenennen",
+    bodyHTML: `
+      <div class="field">
+        <label>Name</label>
+        <input id="planNewName" value="${escapeAttr(p.name)}" />
+      </div>
+    `,
+    actions: [
+      {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal()},
+      {text:"Speichern", className:"btn btnPrimary", onClick: ()=>{
+        const v = ($("planNewName").value||"").trim();
+        if(!v){ toast("Name fehlt"); return; }
+        p.name = v;
+        saveState(); closeModal(); renderSavings(); toast("Gespeichert");
+      }},
+    ]
+  });
+}
+
+function openHardDeletePlan(planId){
+  const p = state.savingsPlans.find(x=>x.id===planId);
+  if(!p) return;
+
+  openModal({
+    title: "Endgültig löschen",
+    bodyHTML: `
+      <div class="muted">Das löscht den Sparplan, alle Raten und alle Einzahlungen/Entnahmen.</div>
+      <div class="field">
+        <label>Zum Bestätigen tippe: <b>LÖSCHEN</b></label>
+        <input id="delPlanWord" placeholder="LÖSCHEN" />
+      </div>
+    `,
+    actions: [
+      {text:"Abbrechen", className:"btn btnSmall", onClick: ()=>closeModal()},
+      {text:"Löschen", className:"btn btnDanger", onClick: ()=>{
+        const v = ($("delPlanWord").value||"").trim().toUpperCase();
+        if(v!=="LÖSCHEN"){ toast("Bitte LÖSCHEN tippen"); return; }
+
+        state.savingsPlans = state.savingsPlans.filter(x=>x.id!==planId);
+        state.savingsRates = state.savingsRates.filter(x=>x.planId!==planId);
+        state.savingsMoves = state.savingsMoves.filter(x=>x.planId!==planId);
+
+        saveState();
+        closeModal();
+        renderSavings();
+        toast("Gelöscht");
+      }},
+    ]
+  });
+}
+
+/* ---------- Route Handling ---------- */
+function renderRoute(){
+  const h = location.hash || "#/";
+  const route = h.replace("#/","");
+
+  if(route==="income") return renderIncome();
+  if(route==="fixed") return renderFixed();
+  if(route==="expenses") return renderExpenses();
+  if(route==="savings") return renderSavings();
+  return renderHome();
+}
+
+function renderAll(){
+  renderRoute();
+}
+
+/* ---------- Safety: escape HTML ---------- */
+function escapeHtml(s){
+  return String(s)
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+function escapeAttr(s){
+  return escapeHtml(s).replaceAll("\n"," ");
+}
+
+/* ---------- Init ---------- */
+(function init(){
+  saveState();      // ensures storage exists
+  renderAll();
+})();

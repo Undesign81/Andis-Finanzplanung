@@ -1,69 +1,48 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Finanzübersicht</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Finanzplan</title>
+  <link rel="stylesheet" href="./style.css" />
+  <meta name="theme-color" content="#ffffff" />
 </head>
 <body>
+  <div class="safe shell">
+    <div class="container">
+      <!-- Header -->
+      <div class="topbar">
+        <div>
+          <div class="h1" id="pageTitle">Finanzplan</div>
+          <div class="sub" id="pageSub">Lokal • EUR</div>
+        </div>
+        <button class="btn btnSmall" id="btnHome" type="button">Home</button>
+      </div>
 
-<header>
-  <h1>📊 Übersicht</h1>
-</header>
+      <!-- Screens -->
+      <section class="screen" id="screen-home"></section>
+      <section class="screen" id="screen-income"></section>
+      <section class="screen" id="screen-fixed"></section>
+      <section class="screen" id="screen-expenses"></section>
+      <section class="screen" id="screen-savings"></section>
 
-<main>
+      <!-- Modal -->
+      <div class="modalBackdrop hidden" id="modalBackdrop" role="dialog" aria-modal="true">
+        <div class="modal">
+          <div class="modalHeader">
+            <div class="h2" id="modalTitle">Titel</div>
+            <button class="iconBtn" id="modalClose" type="button" aria-label="Schließen">✕</button>
+          </div>
+          <div id="modalBody"></div>
+          <div class="modalActions" id="modalActions"></div>
+        </div>
+      </div>
 
-  <section class="card">
-    <h2>Monat</h2>
-    <div class="row">
-      <input id="monat" class="input" type="month">
-      <button class="btn small-btn" onclick="setToCurrentMonth()">Aktueller Monat</button>
+      <!-- Toast -->
+      <div class="toast hidden" id="toast"></div>
     </div>
-    <div class="hint" id="monat-hinweis"></div>
-  </section>
+  </div>
 
-  <section class="card">
-    <h2>Einnahmen</h2>
-    <p id="einnahmen-summe">0 €</p>
-    <div id="einnahmen-liste"></div>
-    <button class="btn" onclick="addEinnahme()">+ Einnahme hinzufügen</button>
-  </section>
-
-  <section class="card">
-    <h2>Fixkosten</h2>
-    <p id="fixkosten">0 €</p>
-    <div id="fixkosten-liste"></div>
-    <button class="btn" onclick="addFixkosten()">+ Fixkosten hinzufügen</button>
-  </section>
-
-  <section class="card">
-    <h2>Sparpläne</h2>
-    <p id="sparen">0 €</p>
-
-    <div class="subcard">
-      <div class="subhead">Gesamt gespart (bis ausgewählter Monat)</div>
-      <div id="sparen-gesamt"></div>
-    </div>
-
-    <div id="sparen-liste"></div>
-    <button class="btn" onclick="addSparplan()">+ Sparplan hinzufügen</button>
-  </section>
-
-  <section class="card">
-    <h2>Buchungen (Monat)</h2>
-    <p id="buchungen-summe">0 €</p>
-    <div id="buchungen-liste"></div>
-    <button class="btn" onclick="addBuchung()">+ Buchung hinzufügen</button>
-  </section>
-
-  <section class="card highlight">
-    <h2>Verfügbar (Monat)</h2>
-    <p id="verfuegbar">0 €</p>
-  </section>
-
-</main>
-
-<script src="app.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
