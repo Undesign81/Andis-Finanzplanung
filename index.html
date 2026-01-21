@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Finanzübersicht</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>📊 Übersicht</h1>
+</header>
+
+<main>
+
+  <section class="card">
+    <h2>Monat</h2>
+    <div class="row">
+      <input id="monat" class="input" type="month">
+      <button class="btn small-btn" onclick="setToCurrentMonth()">Aktueller Monat</button>
+    </div>
+    <div class="hint" id="monat-hinweis"></div>
+  </section>
+
+  <section class="card">
+    <h2>Einnahmen</h2>
+    <p id="einnahmen-summe">0 €</p>
+    <div id="einnahmen-liste"></div>
+    <button class="btn" onclick="addEinnahme()">+ Einnahme hinzufügen</button>
+  </section>
+
+  <section class="card">
+    <h2>Fixkosten</h2>
+    <p id="fixkosten">0 €</p>
+    <div id="fixkosten-liste"></div>
+    <button class="btn" onclick="addFixkosten()">+ Fixkosten hinzufügen</button>
+  </section>
+
+  <section class="card">
+    <h2>Sparpläne</h2>
+    <p id="sparen">0 €</p>
+
+    <div class="subcard">
+      <div class="subhead">Gesamt gespart (bis ausgewählter Monat)</div>
+      <div id="sparen-gesamt"></div>
+    </div>
+
+    <div id="sparen-liste"></div>
+    <button class="btn" onclick="addSparplan()">+ Sparplan hinzufügen</button>
+  </section>
+
+  <section class="card">
+    <h2>Buchungen (Monat)</h2>
+    <p id="buchungen-summe">0 €</p>
+    <div id="buchungen-liste"></div>
+    <button class="btn" onclick="addBuchung()">+ Buchung hinzufügen</button>
+  </section>
+
+  <section class="card highlight">
+    <h2>Verfügbar (Monat)</h2>
+    <p id="verfuegbar">0 €</p>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
