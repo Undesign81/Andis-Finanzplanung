@@ -77,7 +77,9 @@ function ensureIds(arr) {
 }
 
 /********************************
- * VERSIONIERUNG FIXKOSTEN (Änderungen ab Folgemonat)
+ * VERSIONIERUNG FIXKOSTEN
+ * - Änderungen können ab "diesem Monat" ODER "nächstem Monat" gelten
+ * - Vergangenheit bleibt unverändert
  ********************************/
 function ensureVersionFields(arr, defaultStartMonat) {
   let changed = false;
@@ -169,6 +171,7 @@ if (!localStorage.getItem("einnahmen")) {
   ]));
 }
 
+// Fixkosten sind versioniert gespeichert
 if (!localStorage.getItem("fixkosten")) {
   localStorage.setItem("fixkosten", JSON.stringify([
     { id: newId(), baseId: newId(), name: "Miete", betrag: 950, startMonat: "1900-01", deleted: false },
@@ -268,11 +271,16 @@ function deleteEinnahmeById(id) {
 }
 
 /********************************
- * FIXKOSTEN (Änderungen ab Folgemonat)
+ * FIXKOSTEN (NEU: ab diesem Monat ODER ab nächstem Monat)
  ********************************/
 function addFixkosten() {
   const selectedMonth = getSelectedMonth();
-  const giltAb = nextMonthISO(selectedMonth);
+  const nextMonth = nextMonthISO(selectedMonth);
+
+  const abNaechstem = confirm(
+    `Fixkosten ab wann anlegen?\n\nOK = ab nächstem Monat (${fmtMonat(nextMonth)})\nAbbrechen = ab diesem Monat (${fmtMonat(selectedMonth)})`
+  );
+  const giltAb = abNaechstem ? nextMonth : selectedMonth;
 
   const name = prompt(`Name der Fixkosten (gilt ab ${fmtMonat(giltAb)}):`);
   if (!name) return;
@@ -293,7 +301,12 @@ function addFixkosten() {
 
 function editFixkostenByBaseId(baseId) {
   const selectedMonth = getSelectedMonth();
-  const giltAb = nextMonthISO(selectedMonth);
+  const nextMonth = nextMonthISO(selectedMonth);
+
+  const abNaechstem = confirm(
+    `Änderung ab wann?\n\nOK = ab nächstem Monat (${fmtMonat(nextMonth)})\nAbbrechen = ab diesem Monat (${fmtMonat(selectedMonth)})`
+  );
+  const giltAb = abNaechstem ? nextMonth : selectedMonth;
 
   const fixkosten0 = JSON.parse(localStorage.getItem("fixkosten")) || [];
   const migrated = ensureVersionFields(fixkosten0, "1900-01");
@@ -309,11 +322,14 @@ function editFixkostenByBaseId(baseId) {
   const neuerBetrag = Number(prompt(`Betrag ändern (wirkt ab ${fmtMonat(giltAb)}):`, current.betrag));
   if (isNaN(neuerBetrag)) return;
 
-  if (confirm(`Fixkosten ab ${fmtMonat(giltAb)} löschen?`)) {
-    fixkosten.push({ id: newId(), baseId, name: current.name, betrag: current.betrag, startMonat: giltAb, deleted: true });
-  } else {
-    fixkosten.push({ id: newId(), baseId, name: neuerName, betrag: neuerBetrag, startMonat: giltAb, deleted: false });
-  }
+  fixkosten.push({
+    id: newId(),
+    baseId,
+    name: neuerName,
+    betrag: neuerBetrag,
+    startMonat: giltAb,
+    deleted: false
+  });
 
   localStorage.setItem("fixkosten", JSON.stringify(fixkosten));
   render();
@@ -321,9 +337,14 @@ function editFixkostenByBaseId(baseId) {
 
 function deleteFixkostenByBaseId(baseId) {
   const selectedMonth = getSelectedMonth();
-  const giltAb = nextMonthISO(selectedMonth);
+  const nextMonth = nextMonthISO(selectedMonth);
 
-  if (!confirm(`Fixkosten ab ${fmtMonat(giltAb)} wirklich löschen?`)) return;
+  const abNaechstem = confirm(
+    `Fixkosten ab wann löschen?\n\nOK = ab nächstem Monat (${fmtMonat(nextMonth)})\nAbbrechen = ab diesem Monat (${fmtMonat(selectedMonth)})`
+  );
+  const startMonat = abNaechstem ? nextMonth : selectedMonth;
+
+  if (!confirm(`Wirklich löschen ab ${fmtMonat(startMonat)}?`)) return;
 
   const fixkosten0 = JSON.parse(localStorage.getItem("fixkosten")) || [];
   const migrated = ensureVersionFields(fixkosten0, "1900-01");
@@ -333,8 +354,14 @@ function deleteFixkostenByBaseId(baseId) {
   const current = effective.find(x => x.baseId === baseId);
   if (!current) return;
 
-  // ab Folgemonat als "deleted" versionieren
-  fixkosten.push({ id: newId(), baseId, name: current.name, betrag: current.betrag, startMonat: giltAb, deleted: true });
+  fixkosten.push({
+    id: newId(),
+    baseId,
+    name: current.name,
+    betrag: current.betrag,
+    startMonat,
+    deleted: true
+  });
 
   localStorage.setItem("fixkosten", JSON.stringify(fixkosten));
   render();
@@ -509,9 +536,9 @@ function render() {
 
   const monatHinweis = document.getElementById("monat-hinweis");
   if (monatHinweis) {
-    const giltAb = nextMonthISO(selectedMonth);
+    const nextMonth = nextMonthISO(selectedMonth);
     monatHinweis.textContent =
-      `Auswertung für ${fmtMonat(selectedMonth)} • Fixkosten-Änderungen wirken ab ${fmtMonat(giltAb)}`;
+      `Auswertung für ${fmtMonat(selectedMonth)} • Fixkosten können ab diesem oder ab ${fmtMonat(nextMonth)} geändert werden`;
   }
 
   const buchungenMonat = buchungen.filter(b => (b.datum || "").startsWith(selectedMonth));
@@ -542,7 +569,7 @@ function render() {
     eListe.appendChild(row);
   });
 
-  // Fixkosten Liste (mit 🗑️, wirkt ab Folgemonat)
+  // Fixkosten Liste (mit 🗑️)
   const fListe = document.getElementById("fixkosten-liste");
   fListe.innerHTML = "";
   fixkostenEffektiv.forEach((f) => {
