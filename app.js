@@ -50,6 +50,8 @@ function uid(prefix){
 /* ---------- Data Model ---------- */
 function defaultState(){
   return {
+    // Monatszustände je Seite
+    homeMonth: ymNow(),
     incomeMonth: ymNow(),
     fixedMonth: ymNow(),
     expensesMonth: ymNow(),
@@ -189,6 +191,7 @@ function getRate(planId, month){
   return state.savingsRates.find(r=>r.planId===planId && r.month===month) || null;
 }
 function ensureRatesCopiedForMonth(month){
+  // Kopiert Sparraten aus Vormonat, wenn für diesen Monat noch keine Raten existieren
   const activePlans = state.savingsPlans.filter(p=>!p.isArchived);
   const hasAny = state.savingsRates.some(r=>r.month===month && activePlans.some(p=>p.id===r.planId));
   if(hasAny) return;
@@ -210,13 +213,14 @@ function ensureRatesCopiedForMonth(month){
   saveState();
 }
 function ensureFixedCopiedForMonth(month){
+  // Fixkosten aus Vormonat übernehmen – aber nur, wenn Monat noch keine Fixkosten hat
   const hasAny = state.fixedCosts.some(x=>x.month===month);
   if(hasAny) return false;
   const prev = addMonths(month, -1);
   const prevItems = state.fixedCosts.filter(x=>x.month===prev);
   if(prevItems.length===0) return false;
 
-  const date = `${month}-01`;
+  const date = `${month}-01`; // immer 01.
   prevItems.forEach(x=>{
     state.fixedCosts.push({
       id: uid("fix"),
@@ -231,17 +235,35 @@ function ensureFixedCopiedForMonth(month){
   return true;
 }
 
-/* ---------- Render: Home ---------- */
+/* ---------- Month Header (data-act, keine IDs!) ---------- */
+function renderMonthHeader(current){
+  return `
+    <div class="card">
+      <div class="row">
+        <button class="iconBtn" data-act="mPrev" type="button">◀</button>
+        <div style="text-align:center">
+          <div class="itemTitle">${monthLabelDE(current)}</div>
+          <div class="itemSub">Monat</div>
+        </div>
+        <button class="iconBtn" data-act="mNext" type="button">▶</button>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- Render: Home (MIT Monatsauswahl) ---------- */
 function renderHome(){
-  const month = ymNow(); // immer aktueller Monat
-  setPageTitle("Finanzplan", `${monthLabelDE(month)} • Aktueller Monat`);
+  const month = state.homeMonth || ymNow();
+  setPageTitle("Finanzplan", `${monthLabelDE(month)} • Übersicht`);
   showScreen("home");
 
   const avail = availableBudget(month);
-  const totals = savingsTotalsByPlan();
+  const totals = savingsTotalsByPlan(); // Gesamtsummen (nicht monatsabhängig)
 
   const html = `
     <div class="list">
+      ${renderMonthHeader(month)}
+
       <div class="card">
         <div class="sub" style="margin:0">Noch verfügbares Budget</div>
         <div class="bigValue">${centsToEUR(avail)}</div>
@@ -250,6 +272,8 @@ function renderHome(){
         <div class="kv"><span>Sonstige Ausgaben</span><span>${centsToEUR(sumExpenses(month))}</span></div>
         <div class="kv"><span>Eingezahlt</span><span>${centsToEUR(sumDeposits(month))}</span></div>
       </div>
+
+      <button class="btn" id="btnToday">Aktueller Monat</button>
 
       <div class="card">
         <div class="row">
@@ -278,10 +302,44 @@ function renderHome(){
   `;
   $("screen-home").innerHTML = html;
 
-  $("goSavings").onclick = ()=>go("savings");
-  $("goIncome").onclick = ()=>go("income");
-  $("goFixed").onclick = ()=>go("fixed");
-  $("goExpenses").onclick = ()=>go("expenses");
+  // Monats-Pfeile (nur in screen-home!)
+  const root = $("screen-home");
+  root.querySelector('[data-act="mPrev"]').onclick = ()=>{
+    state.homeMonth = addMonths(month, -1);
+    saveState();
+    renderHome();
+  };
+  root.querySelector('[data-act="mNext"]').onclick = ()=>{
+    state.homeMonth = addMonths(month, 1);
+    saveState();
+    renderHome();
+  };
+
+  $("btnToday").onclick = ()=>{
+    state.homeMonth = ymNow();
+    saveState();
+    renderHome();
+    toast("Aktueller Monat");
+  };
+
+  // Verbesserung #2: Home-Monat an Zielseite übergeben
+  $("goSavings").onclick = ()=>{
+    state.savingsMonth = month; saveState();
+    go("savings");
+  };
+  $("goIncome").onclick = ()=>{
+    state.incomeMonth = month; saveState();
+    go("income");
+  };
+  $("goFixed").onclick = ()=>{
+    state.fixedMonth = month; saveState();
+    go("fixed");
+  };
+  $("goExpenses").onclick = ()=>{
+    state.expensesMonth = month; saveState();
+    go("expenses");
+  };
+
   $("doReset").onclick = async ()=>{
     openModal({
       title: "App zurücksetzen",
@@ -303,22 +361,6 @@ function renderHome(){
       ]
     });
   };
-}
-
-/* ---------- Month Header (FIX) ---------- */
-function renderMonthHeader(current){
-  return `
-    <div class="card">
-      <div class="row">
-        <button class="iconBtn" data-act="mPrev" type="button">◀</button>
-        <div style="text-align:center">
-          <div class="itemTitle">${monthLabelDE(current)}</div>
-          <div class="itemSub">Monat</div>
-        </div>
-        <button class="iconBtn" data-act="mNext" type="button">▶</button>
-      </div>
-    </div>
-  `;
 }
 
 /* ---------- Render: Income ---------- */
@@ -680,10 +722,6 @@ function renderExpenses(){
   });
 }
 
-/* --- Ab hier ist dein Code wie gehabt, aber wenn du Expenses/Savings weiter unten hast,
-       ist das völlig ok. Wichtig ist: MonthHeader + mPrev/mNext Bindings sind gefixt. --- */
-
-/* ---------- Expense Forms + Menus ---------- */
 function openExpenseForm(id){
   const isEdit = !!id;
   const item = isEdit ? state.expenses.find(x=>x.id===id) : null;
@@ -774,7 +812,7 @@ function openExpenseMenu(id){
   });
 }
 
-/* ---------- Types/Categories Management ---------- */
+/* ---------- Types/Categories Management (with safe delete mapping) ---------- */
 function openManageTypes(kind){
   const isFixed = kind==="fixed";
   const list = isFixed ? state.fixedTypes : state.expenseCategories;
@@ -999,7 +1037,6 @@ function renderSavings(){
   });
 }
 
-/* ---------- Savings modals ---------- */
 function openAddPlan(){
   openModal({
     title: "Sparplan hinzufügen",
@@ -1089,7 +1126,7 @@ function doDeposit(planId){
   const exists = state.savingsMoves.some(m=>m.planId===planId && m.month===month && m.type==="deposit");
   if(exists){ toast("Schon eingezahlt"); return; }
 
-  const date = `${month}-01`;
+  const date = `${month}-01`; // immer 01.
   state.savingsMoves.push({ id: uid("sm"), planId, date, month, amountCents: amount, type:"deposit" });
   saveState();
   renderSavings();
@@ -1216,6 +1253,6 @@ function escapeAttr(s){
 
 /* ---------- Init ---------- */
 (function init(){
-  saveState();
+  saveState();      // ensures storage exists
   renderAll();
 })();
