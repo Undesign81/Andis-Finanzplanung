@@ -88,7 +88,6 @@ function loadState(){
   if(!raw) return defaultState();
   try{
     const st = JSON.parse(raw);
-    // minimal migration safety
     return Object.assign(defaultState(), st);
   }catch{
     return defaultState();
@@ -190,7 +189,6 @@ function getRate(planId, month){
   return state.savingsRates.find(r=>r.planId===planId && r.month===month) || null;
 }
 function ensureRatesCopiedForMonth(month){
-  // Kopiert Sparraten aus Vormonat, wenn für diesen Monat noch keine Raten existieren
   const activePlans = state.savingsPlans.filter(p=>!p.isArchived);
   const hasAny = state.savingsRates.some(r=>r.month===month && activePlans.some(p=>p.id===r.planId));
   if(hasAny) return;
@@ -207,21 +205,18 @@ function ensureRatesCopiedForMonth(month){
         month,
         amountCents: pr.amountCents
       });
-    } else {
-      // kein Vorwert -> Rate 0 anlegen? lieber nicht. Nutzer legt bei Bedarf an.
     }
   });
   saveState();
 }
 function ensureFixedCopiedForMonth(month){
-  // Fixkosten aus Vormonat übernehmen – aber nur, wenn Monat noch keine Fixkosten hat
   const hasAny = state.fixedCosts.some(x=>x.month===month);
   if(hasAny) return false;
   const prev = addMonths(month, -1);
   const prevItems = state.fixedCosts.filter(x=>x.month===prev);
   if(prevItems.length===0) return false;
 
-  const date = `${month}-01`; // immer 01.
+  const date = `${month}-01`;
   prevItems.forEach(x=>{
     state.fixedCosts.push({
       id: uid("fix"),
@@ -310,17 +305,17 @@ function renderHome(){
   };
 }
 
-/* ---------- Render: Month Header ---------- */
-function renderMonthHeader(current, onPrev, onNext){
+/* ---------- Month Header (FIX) ---------- */
+function renderMonthHeader(current){
   return `
     <div class="card">
       <div class="row">
-        <button class="iconBtn" id="mPrev" type="button">◀</button>
+        <button class="iconBtn" data-act="mPrev" type="button">◀</button>
         <div style="text-align:center">
           <div class="itemTitle">${monthLabelDE(current)}</div>
           <div class="itemSub">Monat</div>
         </div>
-        <button class="iconBtn" id="mNext" type="button">▶</button>
+        <button class="iconBtn" data-act="mNext" type="button">▶</button>
       </div>
     </div>
   `;
@@ -373,12 +368,13 @@ function renderIncome(){
   `;
   $("screen-income").innerHTML = html;
 
-  $("mPrev").onclick = ()=>{ state.incomeMonth = addMonths(state.incomeMonth,-1); saveState(); renderIncome(); };
-  $("mNext").onclick = ()=>{ state.incomeMonth = addMonths(state.incomeMonth, 1); saveState(); renderIncome(); };
+  const root = $("screen-income");
+  root.querySelector('[data-act="mPrev"]').onclick = ()=>{ state.incomeMonth = addMonths(state.incomeMonth,-1); saveState(); renderIncome(); };
+  root.querySelector('[data-act="mNext"]').onclick = ()=>{ state.incomeMonth = addMonths(state.incomeMonth, 1); saveState(); renderIncome(); };
 
   $("addIncome").onclick = ()=>openIncomeForm(null);
 
-  document.querySelectorAll('[data-act="incomeMenu"]').forEach(btn=>{
+  root.querySelectorAll('[data-act="incomeMenu"]').forEach(btn=>{
     btn.onclick = ()=>openIncomeMenu(btn.getAttribute("data-id"));
   });
 }
@@ -428,7 +424,6 @@ function openIncomeForm(id){
           }else{
             state.incomes.push({ id: uid("inc"), date, month, type, amountCents:cents, note });
           }
-          // Wenn man im Formular ein anderes Datum wählt, springt Seite automatisch auf diesen Monat? -> nein, bleibt beim gewählten Monat.
           saveState();
           closeModal();
           renderIncome();
@@ -511,8 +506,9 @@ function renderFixed(){
   `;
   $("screen-fixed").innerHTML = html;
 
-  $("mPrev").onclick = ()=>{ state.fixedMonth = addMonths(state.fixedMonth,-1); saveState(); renderFixed(); };
-  $("mNext").onclick = ()=>{ state.fixedMonth = addMonths(state.fixedMonth, 1); saveState(); renderFixed(); };
+  const root = $("screen-fixed");
+  root.querySelector('[data-act="mPrev"]').onclick = ()=>{ state.fixedMonth = addMonths(state.fixedMonth,-1); saveState(); renderFixed(); };
+  root.querySelector('[data-act="mNext"]').onclick = ()=>{ state.fixedMonth = addMonths(state.fixedMonth, 1); saveState(); renderFixed(); };
 
   $("addFix").onclick = ()=>openFixedForm(null);
   $("manageFixTypes").onclick = ()=>openManageTypes("fixed");
@@ -523,7 +519,7 @@ function renderFixed(){
     else toast("Nichts zu übernehmen (oder schon vorhanden)");
   };
 
-  document.querySelectorAll('[data-act="fixMenu"]').forEach(btn=>{
+  root.querySelectorAll('[data-act="fixMenu"]').forEach(btn=>{
     btn.onclick = ()=>openFixedMenu(btn.getAttribute("data-id"));
   });
 }
@@ -672,17 +668,22 @@ function renderExpenses(){
   `;
   $("screen-expenses").innerHTML = html;
 
-  $("mPrev").onclick = ()=>{ state.expensesMonth = addMonths(state.expensesMonth,-1); saveState(); renderExpenses(); };
-  $("mNext").onclick = ()=>{ state.expensesMonth = addMonths(state.expensesMonth, 1); saveState(); renderExpenses(); };
+  const root = $("screen-expenses");
+  root.querySelector('[data-act="mPrev"]').onclick = ()=>{ state.expensesMonth = addMonths(state.expensesMonth,-1); saveState(); renderExpenses(); };
+  root.querySelector('[data-act="mNext"]').onclick = ()=>{ state.expensesMonth = addMonths(state.expensesMonth, 1); saveState(); renderExpenses(); };
 
   $("addExp").onclick = ()=>openExpenseForm(null);
   $("manageCats").onclick = ()=>openManageTypes("expense");
 
-  document.querySelectorAll('[data-act="expMenu"]').forEach(btn=>{
+  root.querySelectorAll('[data-act="expMenu"]').forEach(btn=>{
     btn.onclick = ()=>openExpenseMenu(btn.getAttribute("data-id"));
   });
 }
 
+/* --- Ab hier ist dein Code wie gehabt, aber wenn du Expenses/Savings weiter unten hast,
+       ist das völlig ok. Wichtig ist: MonthHeader + mPrev/mNext Bindings sind gefixt. --- */
+
+/* ---------- Expense Forms + Menus ---------- */
 function openExpenseForm(id){
   const isEdit = !!id;
   const item = isEdit ? state.expenses.find(x=>x.id===id) : null;
@@ -773,7 +774,7 @@ function openExpenseMenu(id){
   });
 }
 
-/* ---------- Types/Categories Management (with safe delete mapping) ---------- */
+/* ---------- Types/Categories Management ---------- */
 function openManageTypes(kind){
   const isFixed = kind==="fixed";
   const list = isFixed ? state.fixedTypes : state.expenseCategories;
@@ -867,7 +868,6 @@ function openManageTypes(kind){
       return;
     }
 
-    // mapping required
     const alternatives = list.filter(x=>x.id!==id);
     const defaultTarget = alternatives[0]?.id || null;
 
@@ -979,25 +979,27 @@ function renderSavings(){
   `;
   $("screen-savings").innerHTML = html;
 
-  $("mPrev").onclick = ()=>{ state.savingsMonth = addMonths(state.savingsMonth,-1); saveState(); renderSavings(); };
-  $("mNext").onclick = ()=>{ state.savingsMonth = addMonths(state.savingsMonth, 1); saveState(); renderSavings(); };
+  const root = $("screen-savings");
+  root.querySelector('[data-act="mPrev"]').onclick = ()=>{ state.savingsMonth = addMonths(state.savingsMonth,-1); saveState(); renderSavings(); };
+  root.querySelector('[data-act="mNext"]').onclick = ()=>{ state.savingsMonth = addMonths(state.savingsMonth, 1); saveState(); renderSavings(); };
 
   $("addPlan").onclick = ()=>openAddPlan();
 
-  document.querySelectorAll('[data-act="editRate"]').forEach(b=>{
+  root.querySelectorAll('[data-act="editRate"]').forEach(b=>{
     b.onclick = ()=>openEditRate(b.getAttribute("data-id"));
   });
-  document.querySelectorAll('[data-act="deposit"]').forEach(b=>{
+  root.querySelectorAll('[data-act="deposit"]').forEach(b=>{
     b.onclick = ()=>doDeposit(b.getAttribute("data-id"));
   });
-  document.querySelectorAll('[data-act="undoDeposit"]').forEach(b=>{
+  root.querySelectorAll('[data-act="undoDeposit"]').forEach(b=>{
     b.onclick = ()=>undoDeposit(b.getAttribute("data-id"));
   });
-  document.querySelectorAll('[data-act="planMenu"]').forEach(b=>{
+  root.querySelectorAll('[data-act="planMenu"]').forEach(b=>{
     b.onclick = ()=>openPlanMenu(b.getAttribute("data-id"));
   });
 }
 
+/* ---------- Savings modals ---------- */
 function openAddPlan(){
   openModal({
     title: "Sparplan hinzufügen",
@@ -1087,7 +1089,7 @@ function doDeposit(planId){
   const exists = state.savingsMoves.some(m=>m.planId===planId && m.month===month && m.type==="deposit");
   if(exists){ toast("Schon eingezahlt"); return; }
 
-  const date = `${month}-01`; // immer 01.
+  const date = `${month}-01`;
   state.savingsMoves.push({ id: uid("sm"), planId, date, month, amountCents: amount, type:"deposit" });
   saveState();
   renderSavings();
@@ -1214,6 +1216,6 @@ function escapeAttr(s){
 
 /* ---------- Init ---------- */
 (function init(){
-  saveState();      // ensures storage exists
+  saveState();
   renderAll();
 })();
